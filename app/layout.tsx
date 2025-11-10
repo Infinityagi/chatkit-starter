@@ -1,25 +1,26 @@
+import Script from "next/script";
 import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Chat",
-  description: "ChatKit + Agent Builder",
+  title: "AgentKit demo",
+  description: "Demo of ChatKit with hosted workflow",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html lang="en">
-      <body
-        style={{
-          margin: 0,
-          minHeight: "100vh",
-          background:
-            "radial-gradient(1200px 800px at 10% -10%, #DDE6FF 0%, #EEF2FF 35%, #F8FAFF 100%)",
-          color: "#0F172A",
-        }}
-      >
-        {children}
-      </body>
+      <head>
+        <Script
+          src="https://cdn.platform.openai.com/deployments/chatkit/chatkit.js"
+          strategy="beforeInteractive"
+        />
+      </head>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }
