@@ -1,5 +1,7 @@
+/* Tailwind v4 single import */
 @import "tailwindcss";
 
+/* App color variables + explicit color-scheme (overridable) */
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,6 +14,7 @@
   color-scheme: dark;
 }
 
+/* Respect user preference if you don't set data-color-scheme */
 @media (prefers-color-scheme: dark) {
   :root:not([data-color-scheme]) {
     --background: #0a0a0a;
@@ -20,6 +23,7 @@
   }
 }
 
+/* Tailwind theme aliases (optional) */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -27,8 +31,12 @@
   --font-mono: SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
 
-body {
+/* Base */
+* { box-sizing: border-box; }
+
+html, body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  min-height: 100dvh; /* modern viewport unit for Safari/iOS too */
 }
