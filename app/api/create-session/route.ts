@@ -20,7 +20,6 @@ interface CreateSessionRequestBody {
 interface ChatKitSessionResponse {
   client_secret?: string;
   expires_after?: number | string | null;
-  // In error cases, OpenAI typically returns { error: { message, ... } }
   error?: unknown;
   details?: unknown;
   message?: unknown;
@@ -97,12 +96,10 @@ export async function POST(request: Request): Promise<Response> {
       cache: "no-store",
     });
 
-    const upstreamJson =
-      (await upstreamResponse.json().catch(() => ({}))) as unknown;
+    const upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as unknown;
 
     if (!upstreamResponse.ok) {
       const upstreamError = extractUpstreamError(upstreamJson);
-      // Log minimal but useful diagnostics on server
       console.error("[create-session] upstream error", {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
@@ -121,7 +118,7 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    // Happy path: pull client_secret + expires_after safely
+    // Happy path
     const parsed = toChatKitSessionResponse(upstreamJson);
     const clientSecret = parsed.client_secret ?? null;
     const expiresAfter = parsed.expires_after ?? null;
@@ -219,25 +216,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function getStringKey(obj: unknown, key: string): string | null {
-  if (!isRecord(obj)) return null;
-  const v = obj[key];
-  return typeof v === "string" ? v : null;
-}
-
 function getNestedMessage(obj: unknown): string | null {
-  // OpenAI often returns { error: { message: string, ... } }
   if (!isRecord(obj)) return null;
   const err = obj["error"];
   if (isRecord(err)) {
     const msg = err["message"];
     if (typeof msg === "string") return msg;
   }
-  // Sometimes { message: string } at top-level
   const top = obj["message"];
   if (typeof top === "string") return top;
 
-  // Sometimes { details: { error: { message: string } | string } }
   const details = obj["details"];
   if (isRecord(details)) {
     const inner = details["error"];
@@ -251,11 +239,8 @@ function getNestedMessage(obj: unknown): string | null {
 }
 
 function extractUpstreamError(payload: unknown): string | null {
-  // Try common layouts without using 'any'
   const msg = getNestedMessage(payload);
   if (msg) return msg;
-
-  // As a final fallback, if there's a top-level "error" string
   if (isRecord(payload)) {
     const asStr = payload["error"];
     if (typeof asStr === "string") return asStr;
@@ -277,9 +262,9 @@ function toChatKitSessionResponse(value: unknown): ChatKitSessionResponse {
     out.expires_after = null;
   }
 
-  if ("error" in value) out.error = value["error"];
-  if ("details" in value) out.details = value["details"];
-  if ("message" in value) out.message = value["message"];
+  if ("error" in value) out.error = (value as Record<string, unknown>)["error"];
+  if ("details" in value) out.details = (value as Record<string, unknown>)["details"];
+  if ("message" in value) out.message = (value as Record<string, unknown>)["message"];
 
   return out;
 }
