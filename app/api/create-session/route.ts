@@ -1,8 +1,7 @@
 import { WORKFLOW_ID } from "@/lib/config";
 
 /**
- * Run on Vercel Edge (low cold-start) and pin close to OpenAI's US-East
- * You can change preferredRegion if most users are elsewhere.
+ * Run on Vercel Edge (low cold-start) and pin close to OpenAI's US-East.
  */
 export const runtime = "edge";
 export const preferredRegion = ["iad1"];
@@ -10,19 +9,28 @@ export const preferredRegion = ["iad1"];
 /** Incoming body schema (optional fields supported) */
 interface CreateSessionRequestBody {
   workflow?: { id?: string | null } | null;
-  workflowId?: string | null; // convenience alias
-  scope?: { user_id?: string | null } | null; // not used here, but accepted
+  workflowId?: string | null;
+  scope?: { user_id?: string | null } | null; // accepted but unused
   chatkit_configuration?: {
     file_upload?: { enabled?: boolean };
   };
 }
 
-/** Defaults */
+/** Upstream (OpenAI) session response */
+interface ChatKitSessionResponse {
+  client_secret?: string;
+  expires_after?: number | string | null;
+  // In error cases, OpenAI typically returns { error: { message, ... } }
+  error?: unknown;
+  details?: unknown;
+  message?: unknown;
+}
+
 const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
 const SESSION_COOKIE_NAME = "chatkit_session_id";
 const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-/** Create a session — POST only (GET returns a helpful hint for debugging) */
+/** Create a session — POST only (GET shows a helper message) */
 export async function POST(request: Request): Promise<Response> {
   let sessionCookie: string | null = null;
 
@@ -32,22 +40,22 @@ export async function POST(request: Request): Promise<Response> {
       return json(
         {
           error: "Missing OPENAI_API_KEY environment variable",
-          hint: "Set it in Vercel → Project → Settings → Environment Variables",
+          hint:
+            "Set it in Vercel → Project → Settings → Environment Variables (Production/Preview).",
         },
         500
       );
     }
 
-    // Resolve a sticky user id from a cookie (or generate one)
-    const { userId, sessionCookie: resolvedSessionCookie } = await resolveUserId(
-      request
-    );
-    sessionCookie = resolvedSessionCookie;
+    // Resolve sticky user id from cookie (or generate one)
+    const resolved = await resolveUserId(request);
+    const userId = resolved.userId;
+    sessionCookie = resolved.sessionCookie;
 
-    // Parse optional body (Edge Request.body can be read once, so do it here)
+    // Parse optional body
     const body = await safeParseJson<CreateSessionRequestBody>(request);
 
-    // Resolve workflow id: explicit in body → alias → config fallback
+    // Resolve workflow id: body.workflow.id → body.workflowId → config default
     const resolvedWorkflowId =
       body?.workflow?.id ?? body?.workflowId ?? WORKFLOW_ID;
 
@@ -56,7 +64,7 @@ export async function POST(request: Request): Promise<Response> {
         {
           error: "Missing workflow id",
           hint:
-            "Provide { workflow: { id: 'wf_...' } } in the POST body, or set WORKFLOW_ID in '@/lib/config'.",
+            "Provide { workflow: { id: 'wf_...' } } in POST body, or set WORKFLOW_ID in '@/lib/config'.",
         },
         400,
         undefined,
@@ -67,11 +75,10 @@ export async function POST(request: Request): Promise<Response> {
     const apiBase = process.env.CHATKIT_API_BASE ?? DEFAULT_CHATKIT_BASE;
     const url = `${apiBase}/v1/chatkit/sessions`;
 
-    // Optional passthrough for UI features like file upload
     const fileUploadEnabled =
       body?.chatkit_configuration?.file_upload?.enabled ?? false;
 
-    // Create the session with ChatKit (beta header is REQUIRED)
+    // Call OpenAI ChatKit Sessions API
     const upstreamResponse = await fetch(url, {
       method: "POST",
       headers: {
@@ -90,23 +97,23 @@ export async function POST(request: Request): Promise<Response> {
       cache: "no-store",
     });
 
-    const upstreamJson = (await upstreamResponse
-      .json()
-      .catch(() => ({}))) as Record<string, unknown> | undefined;
+    const upstreamJson =
+      (await upstreamResponse.json().catch(() => ({}))) as unknown;
 
     if (!upstreamResponse.ok) {
       const upstreamError = extractUpstreamError(upstreamJson);
+      // Log minimal but useful diagnostics on server
       console.error("[create-session] upstream error", {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
-        body: upstreamJson,
+        error: upstreamError,
       });
+
       return json(
         {
           error:
             upstreamError ??
             `Failed to create session: ${upstreamResponse.status} ${upstreamResponse.statusText}`,
-          details: upstreamJson,
         },
         upstreamResponse.status,
         undefined,
@@ -114,9 +121,10 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    // Happy path: return only what the client needs
-    const clientSecret = (upstreamJson as any)?.client_secret ?? null;
-    const expiresAfter = (upstreamJson as any)?.expires_after ?? null;
+    // Happy path: pull client_secret + expires_after safely
+    const parsed = toChatKitSessionResponse(upstreamJson);
+    const clientSecret = parsed.client_secret ?? null;
+    const expiresAfter = parsed.expires_after ?? null;
 
     return json(
       { client_secret: clientSecret, expires_after: expiresAfter },
@@ -135,11 +143,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-/**
- * Helpful GET for quick sanity checks in a browser tab:
- *  - shows what the endpoint expects
- *  - avoids a blank 405 page
- */
+/** Helpful GET for quick sanity checks in a browser tab */
 export async function GET(): Promise<Response> {
   return json({
     info: "POST here to create a ChatKit client_secret.",
@@ -156,7 +160,9 @@ function json(
   headers?: Record<string, string>,
   sessionCookie?: string | null
 ): Response {
-  const resHeaders = new Headers(headers ?? { "Content-Type": "application/json" });
+  const resHeaders = new Headers(
+    headers ?? { "Content-Type": "application/json" }
+  );
   if (sessionCookie) resHeaders.append("Set-Cookie", sessionCookie);
   return new Response(JSON.stringify(payload), { status, headers: resHeaders });
 }
@@ -177,7 +183,8 @@ async function resolveUserId(
 
 function getCookieValue(header: string | null, name: string): string | null {
   if (!header) return null;
-  for (const part of header.split(";")) {
+  const parts = header.split(";");
+  for (const part of parts) {
     const [rawName, ...rest] = part.split("=");
     if (!rawName || rest.length === 0) continue;
     if (rawName.trim() === name) return rest.join("=").trim();
@@ -206,31 +213,73 @@ async function safeParseJson<T>(req: Request): Promise<T | null> {
   }
 }
 
-function extractUpstreamError(
-  payload: Record<string, unknown> | undefined
-): string | null {
-  if (!payload) return null;
+/** Type guards & extractors (avoid 'any') */
 
-  const error = (payload as any).error;
-  if (typeof error === "string") return error;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
-  if (error && typeof error === "object" && "message" in error) {
-    const msg = (error as any).message;
+function getStringKey(obj: unknown, key: string): string | null {
+  if (!isRecord(obj)) return null;
+  const v = obj[key];
+  return typeof v === "string" ? v : null;
+}
+
+function getNestedMessage(obj: unknown): string | null {
+  // OpenAI often returns { error: { message: string, ... } }
+  if (!isRecord(obj)) return null;
+  const err = obj["error"];
+  if (isRecord(err)) {
+    const msg = err["message"];
     if (typeof msg === "string") return msg;
   }
+  // Sometimes { message: string } at top-level
+  const top = obj["message"];
+  if (typeof top === "string") return top;
 
-  const details = (payload as any).details;
-  if (typeof details === "string") return details;
-
-  if (details && typeof details === "object" && "error" in details) {
-    const nested = (details as any).error;
-    if (typeof nested === "string") return nested;
-    if (nested && typeof nested === "object" && "message" in nested) {
-      const msg = (nested as any).message;
-      if (typeof msg === "string") return msg;
+  // Sometimes { details: { error: { message: string } | string } }
+  const details = obj["details"];
+  if (isRecord(details)) {
+    const inner = details["error"];
+    if (typeof inner === "string") return inner;
+    if (isRecord(inner)) {
+      const m = inner["message"];
+      if (typeof m === "string") return m;
     }
   }
-
-  if (typeof (payload as any).message === "string") return (payload as any).message;
   return null;
+}
+
+function extractUpstreamError(payload: unknown): string | null {
+  // Try common layouts without using 'any'
+  const msg = getNestedMessage(payload);
+  if (msg) return msg;
+
+  // As a final fallback, if there's a top-level "error" string
+  if (isRecord(payload)) {
+    const asStr = payload["error"];
+    if (typeof asStr === "string") return asStr;
+  }
+  return null;
+}
+
+function toChatKitSessionResponse(value: unknown): ChatKitSessionResponse {
+  const out: ChatKitSessionResponse = {};
+  if (!isRecord(value)) return out;
+
+  const cs = value["client_secret"];
+  if (typeof cs === "string") out.client_secret = cs;
+
+  const exp = value["expires_after"];
+  if (typeof exp === "number" || typeof exp === "string") {
+    out.expires_after = exp;
+  } else if (exp === null) {
+    out.expires_after = null;
+  }
+
+  if ("error" in value) out.error = value["error"];
+  if ("details" in value) out.details = value["details"];
+  if ("message" in value) out.message = value["message"];
+
+  return out;
 }
