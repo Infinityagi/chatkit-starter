@@ -326,40 +326,45 @@ export function ChatKitPanel({
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
 
-  return (
-    <div
-      className={[
-        "relative w-full",
-        "h-[100dvh]", // fill visible window height across browsers
-        "rounded-none md:rounded-2xl",
-        "overflow-hidden",
-        "bg-white/55 dark:bg-slate-900/55",
-        "backdrop-blur-md",
-        "border border-white/45 dark:border-slate-500/25",
-        "shadow-[0_25px_60px_rgba(2,6,23,0.12),_0_10px_20px_rgba(2,6,23,0.08)]",
-        "transition-colors",
-      ].join(" ")}
-      style={{ maxWidth: "1400px", marginInline: "auto" }}
-    >
-      <ChatKit
-        key={widgetInstanceKey}
-        control={chatkit.control}
-        className={
-          blockingError || isInitializingSession
-            ? "pointer-events-none opacity-0"
-            : "block h-full w-full"
-        }
-      />
-      <ErrorOverlay
-        error={blockingError}
-        fallbackMessage={
-          blockingError || !isInitializingSession
-            ? null
-            : "Loading assistant session..."
-        }
-        onRetry={blockingError && errors.retryable ? handleResetChat : null}
-        retryLabel="Restart chat"
-      />
-    </div>
-  );
+return (
+  <div
+    className={[
+      // FULL-BLEED
+      "fixed inset-0",        // pin to viewport edges
+      "w-screen h-[100dvh]",  // fill visible window (Safari-friendly)
+      // Glass look (you can keep or tone down)
+      "bg-white/55 dark:bg-slate-900/55",
+      "backdrop-blur-md",
+      "border-0",             // no border edge when full-bleed
+      "shadow-none",          // no outer shadow when full-bleed
+      "overflow-hidden",
+      "transition-colors",
+    ].join(" ")}
+    // Remove maxWidth/margins entirely for full width
+    style={{
+      // keep iOS safe-area so the composer isn’t under the home bar
+      paddingBottom: "env(safe-area-inset-bottom)",
+    }}
+  >
+    <ChatKit
+      key={widgetInstanceKey}
+      control={chatkit.control}
+      className={
+        blockingError || isInitializingSession
+          ? "pointer-events-none opacity-0"
+          : "block h-full w-full"
+      }
+    />
+    <ErrorOverlay
+      error={blockingError}
+      fallbackMessage={
+        blockingError || !isInitializingSession
+          ? null
+          : "Loading assistant session..."
+      }
+      onRetry={blockingError && errors.retryable ? handleResetChat : null}
+      retryLabel="Restart chat"
+    />
+  </div>
+);
 }
